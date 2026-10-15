@@ -1,0 +1,38 @@
+# Lab 5 - the promotion path. Code moves ONE step at a time:
+#   feature/* -> develop -> sit -> release -> main      (hotfix/* -> main is the emergency lane)
+# This check fails a pull request that comes from the wrong branch.
+
+name: promotion-path
+
+on:
+  pull_request:
+    branches: [develop, sit, release, main]        # the branch the PR wants to merge INTO
+    types: [opened, synchronize, reopened, edited] # "edited" = someone changed the target branch
+
+permissions:
+  contents: read
+
+jobs:
+  check:                         # this id is the check's name in the PR ("check")
+    runs-on: ubuntu-latest
+    steps:
+      - name: Is the source branch allowed?
+        env:                     # head_ref = the PR's branch, base_ref = where it wants to go
+          HEAD: ${{ github.head_ref }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          echo "Pull request: $HEAD -> $BASE"
+          case "$BASE" in
+            develop) allowed="any branch (feature/*, hotfix merge-back, ...)"; ok=true ;;
+            sit)     allowed="develop";                 [ "$HEAD" = "develop" ] && ok=true || ok=false ;;
+            release) allowed="sit";                     [ "$HEAD" = "sit" ] && ok=true || ok=false ;;
+            main)    allowed="release or hotfix/*"
+                     case "$HEAD" in release|hotfix/*) ok=true ;; *) ok=false ;; esac ;;
+            *)       allowed="(not a promotion branch)"; ok=true ;;
+          esac
+          if [ "$ok" = true ]; then
+            echo "OK: $BASE accepts pull requests from $allowed."
+          else
+            echo "::error title=Wrong source branch::A pull request into '$BASE' must come from $allowed, but this one comes from '$HEAD'."
+            exit 1
+          fi
