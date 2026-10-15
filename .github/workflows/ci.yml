@@ -1,0 +1,31 @@
+# Lab 3 - Continuous Integration: run the tests on every pull request and push.
+# The job is called "test"; in lab 4 a ruleset REQUIRES it, so a PR cannot merge while it is red.
+
+name: ci
+
+on:
+  pull_request:                  # when a PR is opened or gets new commits
+  push:
+    branches: [develop, sit, release, main]   # and after every merge into the 4 long-lived branches
+
+permissions:
+  contents: read
+
+jobs:
+  test:                          # this id is the check's name in the PR ("test")
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:                                  # "with" = inputs for the action
+          python-version: "3.13"
+          cache: pip                           # reuse downloaded packages between runs
+
+      - name: Install the dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run the tests
+        run: python -m pytest -q
