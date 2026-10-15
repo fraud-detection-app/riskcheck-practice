@@ -1,0 +1,141 @@
+# Lab 6 - Continuous Delivery, simulated (labs 7-9 push code through it). Nothing is really deployed.
+# The idea to learn: BUILD ONCE on develop, then PROMOTE the same build.
+# "Same build" is found by the TREE HASH = the fingerprint of the exact files.
+# A merge from develop to sit leaves the files identical, so sit has the same tree.
+#
+#   develop : plan -> build (upload riskcheck-tree-<tree>) -> deploy to dev
+#   sit     : plan -> (no build)  -> deploy the SAME artifact to sit
+#   release : plan -> (no build)  -> deploy the SAME artifact to pre-prod   (needs approval)
+#   main    : plan -> (no build)  -> deploy the SAME artifact to prod       (needs approval)
+#   hotfix/*: plan -> build (NO deploy). A hotfix branches from main, so it never passed develop.
+#             Its build is made here, on its own branch. After the hotfix is merged into main,
+#             main has the same tree, so prod deploys THAT build (after approval).
+#             (Let the hotfix run finish green BEFORE you merge, or main will not find the build.)
+
+name: deliver
+
+on:
+  push:
+    branches: [develop, sit, release, main, 'hotfix/**']   # hotfix/** = any branch starting hotfix/
+  workflow_dispatch:             # also lets you press "Run workflow" on one of those branches
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------- plan
+  plan:                          # decide WHERE we deploy and WHICH files we mean
+    runs-on: ubuntu-latest
+    outputs:                     # values that later jobs can read as needs.plan.outputs.<name>
+      env: ${{ steps.pick.outputs.env }}      # empty on a hotfix branch = build only, no deploy
+      tree: ${{ steps.pick.outputs.tree }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pick the environment from the branch name
+        id: pick                 # an id lets other steps (and the outputs above) point here
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          case "$BRANCH" in
+            develop) env_name=dev ;;
+            sit)     env_name=sit ;;
+            release) env_name=pre-prod ;;
+            main)    env_name=prod ;;
+            hotfix/*) env_name="" ;;            # build only: nothing to deploy yet
+            *) echo "::error::'$BRANCH' is not an environment or hotfix branch (develop, sit, release, main, hotfix/*)."; exit 1 ;;
+          esac
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "branch $BRANCH -> environment '${env_name:-none (build only)}', tree $tree"
+          echo "env=$env_name" >> "$GITHUB_OUTPUT"      # this is how a step sets an output
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+
+  # --------------------------------------------------------------- build
+  build:                         # only on develop (or a hotfix branch): the ONLY places a build is made
+    needs: plan                  # wait for plan, and let us read its outputs
+    if: github.ref_name == 'develop' || startsWith(github.ref_name, 'hotfix/')   # elsewhere this job is "skipped"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build the release artifact (a wheel = an installable package file)
+        run: python -m pip wheel . --no-deps -w dist
+      - name: Upload it, named after the tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: riskcheck-tree-${{ needs.plan.outputs.tree }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  # -------------------------------------------------------------- deploy
+  deploy:
+    needs: [plan, build]
+    # A skipped build (sit/release/main) would normally skip this job too. always()
+    # lifts that; the rest says: plan worked, and build either worked or was skipped.
+    # If build FAILED we do not deploy. A hotfix branch has no environment (env is empty): no deploy.
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.env != '' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    environment: ${{ needs.plan.outputs.env }}   # links to a GitHub Environment: branch rule + approval
+    concurrency:                                  # one deploy per environment at a time
+      group: deliver-${{ needs.plan.outputs.env }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read              # needed to find and download a build made by an earlier run
+    env:
+      ENV_NAME: ${{ needs.plan.outputs.env }}
+      TREE: ${{ needs.plan.outputs.tree }}
+      BRANCH: ${{ github.ref_name }}
+      ARTIFACT: riskcheck-tree-${{ needs.plan.outputs.tree }}
+      GH_TOKEN: ${{ github.token }}      # lets the gh command line tool talk to this repo
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Get the artifact (develop - built a minute ago in this run)
+        if: github.ref_name == 'develop'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: artifact
+
+      - name: Get the artifact (sit / release / main - built earlier on develop or a hotfix branch)
+        if: github.ref_name != 'develop'
+        run: |
+          # List artifacts with exactly this name (newest first), made by a run on develop
+          # or on a hotfix/* branch (a hotfix is built on its own branch, never on develop).
+          candidates=$(gh api "repos/$GH_REPO/actions/artifacts?name=$ARTIFACT&per_page=100" \
+            --jq '.artifacts[] | select(.expired == false and (.workflow_run.head_branch == "develop" or (.workflow_run.head_branch | startswith("hotfix/")))) | .workflow_run.id')
+          run_id=""
+          for id in $candidates; do
+            # Only trust a run that finished green. A develop run is green once dev deployed.
+            # A hotfix run deploys nothing: deploy is skipped, a skipped job does not fail a run,
+            # so a hotfix run whose build succeeded also concludes "success".
+            if [ "$(gh api "repos/$GH_REPO/actions/runs/$id" --jq .conclusion)" = "success" ]; then
+              run_id=$id
+              break
+            fi
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error title=No build for this tree::No build for tree $TREE - promote from develop instead of committing to $BRANCH"
+            exit 1
+          fi
+          echo "found the build in run $run_id"
+          gh run download "$run_id" --name "$ARTIFACT" --dir artifact
+
+      - name: Deploy (simulated)
+        run: |
+          wheel=$(find artifact -name '*.whl' | head -n 1)
+          sha=$(sha256sum "$wheel" | cut -d' ' -f1)
+          echo "deploying riskcheck tree-$TREE to $ENV_NAME"
+          echo "  artifact : $wheel"
+          echo "  sha256   : $sha"
+          echo "  would run: terraform apply -var-file=envs/$ENV_NAME.tfvars -var image_uri=<account-id>.dkr.ecr.ap-southeast-2.amazonaws.com/riskcheck@sha256:$sha"
+          case "$ENV_NAME" in pre-prod|prod) approval="yes (required reviewers)" ;; *) approval="no" ;; esac
+          {
+            echo "### Deploy to $ENV_NAME (simulated)"
+            echo ""
+            echo "| Environment | Branch | Tree | Artifact | Approval needed? |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| $ENV_NAME | $BRANCH | \`${TREE:0:12}\` | \`$ARTIFACT\` (sha256 \`${sha:0:12}\`) | $approval |"
+          } >> "$GITHUB_STEP_SUMMARY"
