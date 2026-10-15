@@ -72,7 +72,7 @@ def score_transaction(
         reasons.append("account emptied (balance went to zero)")
 
     # Rule 4: is more money moving than the account held?
-    if amount > balance_before:
+    if txn_type != "CASH_IN" and amount > balance_before:
         score += OVERDRAFT_POINTS
         reasons.append("amount is larger than the balance before")
 
