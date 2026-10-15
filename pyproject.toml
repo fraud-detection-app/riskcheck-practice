@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "riskcheck"
+version = "0.1.0"
+description = "A tiny rules-based transaction risk score (practice repo for the CI/CD class)"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+# Only ship the package. (Without this, setuptools sees tests/, labs/ and
+# scripts/ side by side and refuses to guess what to include.)
+packages = ["riskcheck"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
