@@ -52,3 +52,10 @@ def test_bad_input_is_rejected():
         score_transaction(-1, 100, 100, "PAYMENT")
     with pytest.raises(ValueError):
         score_transaction(10, 100, 90, "WIRE")
+
+
+def test_cash_in_is_never_an_overdraft():
+    # money coming IN cannot overdraw the account
+    score, reasons = score_transaction(500, 100, 600, "CASH_IN")
+    assert score == 0.0
+    assert reasons == []
