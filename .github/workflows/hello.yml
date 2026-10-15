@@ -1,0 +1,47 @@
+# Lab 2 - your first workflow. It changes nothing; it just LOOKS around.
+# Copy this file to .github/workflows/ and push: GitHub starts a run by itself.
+
+name: hello                      # the name shown in the Actions tab
+
+on:                              # WHEN does this workflow start?
+  push:                          #   every time someone pushes to any branch
+  workflow_dispatch:             #   or when you press "Run workflow" in the Actions tab
+
+permissions:                     # what the built-in token may do (least privilege)
+  contents: read                 #   read the repo's files, nothing more
+
+jobs:                            # a workflow is one or more jobs
+  hello:                         # the job's id (you choose it)
+    runs-on: ubuntu-latest       # the machine: a fresh Linux VM that GitHub lends us
+    steps:                       # a job is a list of steps, run in order
+      - name: Get the code
+        uses: actions/checkout@v4          # "uses" = run a ready-made action
+
+      - name: Print what GitHub knows about this run
+        env:                               # pass values in as env vars (safer than ${{ }} inside the script)
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          RUNNER_SYSTEM: ${{ runner.os }}
+        run: |                             # "run" = a shell script on the runner
+          echo "event  : $EVENT"
+          echo "branch : $BRANCH"
+          echo "commit : $SHA"
+          echo "tree   : $(git rev-parse 'HEAD^{tree}')"
+          echo "runner : $RUNNER_SYSTEM"
+
+      - name: Write a summary (shows on the run's page)
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          {
+            echo "### Hello from the runner"
+            echo ""
+            echo "| What | Value |"
+            echo "| --- | --- |"
+            echo "| event | ${{ github.event_name }} |"
+            echo "| branch | $BRANCH |"
+            echo "| commit | \`$(git rev-parse --short HEAD)\` |"
+            echo "| tree | \`$(git rev-parse --short 'HEAD^{tree}')\` |"
+            echo "| runner | ${{ runner.os }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
